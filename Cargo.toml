@@ -29,4 +29,8 @@ opt-level = "z"
 lto = true
 strip = true
 
+[patch.crates-io]
+ring = { git = "https://github.com/Bananz0/ring.git", branch = "0.17-armv7s" }
+
+
 
