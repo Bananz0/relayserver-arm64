@@ -808,8 +808,7 @@ dependencies = [
 [[package]]
 name = "ring"
 version = "0.17.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c17fa4cb658e3583423e915b9f3acc01cceaee1860e33d59ebae66adc3a2dc0d"
+source = "git+https://github.com/Bananz0/ring.git?branch=0.17-armv7s#46d9c1fbbd7d354afd5d5ae92fd58bdc705fd006"
 dependencies = [
  "cc",
  "cfg-if",
