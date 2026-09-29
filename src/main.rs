@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use base64::engine::general_purpose;
 use base64::Engine;
-use homeassistant::{generate_ha_payload, get_local_ip, push_to_homeassistant, HomeAssistantConfig, RelayMetrics};
+use homeassistant::{generate_ha_payload, get_local_ip, push_to_homeassistant, refresh_sensors, HomeAssistantConfig, RelayMetrics};
 use nac::generate_validation_data;
 use relay::{Relay, RelayResource, RelayState};
 use serde::{Deserialize, Serialize};
@@ -149,6 +149,7 @@ async fn main() {
         // Initial delay
         tokio::time::sleep(Duration::from_secs(3)).await;
         loop {
+            refresh_sensors(&ha_loop_metrics).await;
             let ha_opt = ha_loop_config.read().await.clone();
             if let Some(ref ha_cfg) = ha_opt {
                 println!("[HomeAssistant] Reporting status to {}...", ha_cfg.url);

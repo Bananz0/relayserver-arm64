@@ -32,6 +32,8 @@ pub struct RelayMetrics {
     pub relay_code: RwLock<String>,
     pub connected: AtomicBool,
     pub ha_trigger: tokio::sync::mpsc::UnboundedSender<()>,
+    /// Last JSON snapshot from the relay-sensors helper (None until the first successful read).
+    pub sensors: RwLock<Option<serde_json::Value>>,
 }
 
 impl RelayMetrics {
@@ -45,7 +47,12 @@ impl RelayMetrics {
             relay_code: RwLock::new("(Connecting...)".to_string()),
             connected: AtomicBool::new(false),
             ha_trigger,
+            sensors: RwLock::new(None),
         })
+    }
+
+    pub fn get_sensors(&self) -> Option<serde_json::Value> {
+        self.sensors.read().unwrap_or_else(|p| p.into_inner()).clone()
     }
 
     pub fn set_code(&self, code: &str) {
@@ -98,6 +105,35 @@ pub fn get_local_ip() -> String {
     "127.0.0.1".to_string()
 }
 
+const SENSORS_HELPER: &str = "/var/mobile/relay-sensors";
+
+/// Runs the relay-sensors helper and caches its JSON output. The helper is a separate
+/// process so a crash in the private IOKit/IOHID calls can never take the relay down.
+pub async fn refresh_sensors(metrics: &RelayMetrics) {
+    if !std::path::Path::new(SENSORS_HELPER).exists() {
+        return;
+    }
+    let run = tokio::process::Command::new(SENSORS_HELPER).kill_on_drop(true).output();
+    let parsed = match tokio::time::timeout(std::time::Duration::from_secs(5), run).await {
+        Ok(Ok(out)) if out.status.success() => serde_json::from_slice::<serde_json::Value>(&out.stdout).ok(),
+        Ok(Ok(out)) => {
+            eprintln!("[Sensors] helper exited with {}", out.status);
+            None
+        }
+        Ok(Err(e)) => {
+            eprintln!("[Sensors] failed to spawn helper: {e}");
+            None
+        }
+        Err(_) => {
+            eprintln!("[Sensors] helper timed out");
+            None
+        }
+    };
+    if let Some(v) = parsed {
+        *metrics.sensors.write().unwrap_or_else(|p| p.into_inner()) = Some(v);
+    }
+}
+
 pub fn generate_ha_payload(metrics: &RelayMetrics) -> serde_json::Value {
     let local_ip = get_local_ip();
     let battery = crate::c::get_battery_level_rs();
@@ -143,8 +179,70 @@ pub fn generate_ha_payload(metrics: &RelayMetrics) -> serde_json::Value {
             "uptime_seconds": uptime,
             "uptime_human": format!("{:.1}h", uptime as f64 / 3600.0),
             "last_error": last_err,
+            "hardware": metrics.get_sensors(),
         }
     })
+}
+
+async fn post_state(client: &reqwest::Client, base_url: &str, token: &str, entity_id: &str, payload: &serde_json::Value) {
+    let Ok(body) = serde_json::to_string(payload) else { return };
+    let _ = client
+        .post(format!("{}/api/states/{}", base_url, entity_id))
+        .header("Authorization", format!("Bearer {}", token))
+        .header("Content-Type", "application/json")
+        .body(body)
+        .send()
+        .await;
+}
+
+/// Pushes one HA entity per hardware reading from the relay-sensors snapshot.
+/// Readings the helper could not obtain (JSON null) are skipped rather than sent as unknown.
+async fn push_hardware_sensors(client: &reqwest::Client, base_url: &str, token: &str, entity_id: &str, metrics: &RelayMetrics) {
+    let Some(hw) = metrics.get_sensors() else { return };
+    let battery = &hw["battery"];
+
+    // (suffix, value, friendly name, unit, device_class, icon)
+    let readings: [(&str, &serde_json::Value, &str, &str, Option<&str>, &str); 8] = [
+        ("battery_temperature", &battery["temperature_c"], "Battery Temperature", "°C", Some("temperature"), "mdi:thermometer"),
+        ("battery_voltage", &battery["voltage_mv"], "Battery Voltage", "mV", Some("voltage"), "mdi:flash"),
+        ("battery_current", &battery["current_ma"], "Battery Current", "mA", Some("current"), "mdi:current-dc"),
+        ("battery_health", &battery["health_pct"], "Battery Health", "%", None, "mdi:battery-heart-variant"),
+        ("battery_cycles", &battery["cycle_count"], "Battery Cycles", "cycles", None, "mdi:battery-sync"),
+        ("illuminance", &hw["illuminance_lx"], "Ambient Light", "lx", Some("illuminance"), "mdi:brightness-5"),
+        ("memory_free", &hw["mem_free_mb"], "Free Memory", "MB", Some("data_size"), "mdi:memory"),
+        ("system_uptime", &hw["system_uptime_s"], "System Uptime", "s", Some("duration"), "mdi:timer-outline"),
+    ];
+
+    for (suffix, value, name, unit, device_class, icon) in readings {
+        if value.is_null() {
+            continue;
+        }
+        let mut attributes = serde_json::json!({
+            "friendly_name": format!("OpenBubbles Relay {}", name),
+            "unit_of_measurement": unit,
+            "state_class": "measurement",
+            "icon": icon,
+        });
+        if let Some(dc) = device_class {
+            attributes["device_class"] = serde_json::json!(dc);
+        }
+        let payload = serde_json::json!({ "state": value, "attributes": attributes });
+        post_state(client, base_url, token, &format!("{}_{}", entity_id, suffix), &payload).await;
+    }
+
+    // Charging as a real binary_sensor so it can drive automations directly.
+    let charging = battery["is_charging"].as_bool().unwrap_or_else(crate::c::is_charging_rs);
+    let object_id = entity_id.strip_prefix("sensor.").unwrap_or(entity_id);
+    let payload = serde_json::json!({
+        "state": if charging { "on" } else { "off" },
+        "attributes": {
+            "friendly_name": "OpenBubbles Relay Charging",
+            "device_class": "battery_charging",
+            "external_connected": battery["external_connected"],
+            "fully_charged": battery["fully_charged"],
+        }
+    });
+    post_state(client, base_url, token, &format!("binary_sensor.{}_charging", object_id), &payload).await;
 }
 
 pub async fn push_to_homeassistant(
@@ -218,6 +316,9 @@ pub async fn push_to_homeassistant(
                     .await;
             }
         }
+
+        // 3. Hardware sensors from the relay-sensors helper
+        push_hardware_sensors(client, base_url, config.token.trim(), entity_id, metrics).await;
 
         let msg = format!("Success (HTTP {status})");
         metrics.set_push_status(&msg);
