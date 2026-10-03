@@ -195,54 +195,142 @@ async fn post_state(client: &reqwest::Client, base_url: &str, token: &str, entit
         .await;
 }
 
+/// One numeric or text entity derived from the relay-sensors snapshot.
+struct Reading<'a> {
+    suffix: &'a str,
+    value: &'a serde_json::Value,
+    name: &'a str,
+    unit: Option<&'a str>,
+    device_class: Option<&'a str>,
+    state_class: Option<&'a str>,
+    icon: &'a str,
+}
+
+/// One binary_sensor derived from a boolean in the relay-sensors snapshot.
+struct Flag<'a> {
+    suffix: &'a str,
+    value: Option<bool>,
+    name: &'a str,
+    device_class: Option<&'a str>,
+    icon_on: &'a str,
+    icon_off: &'a str,
+}
+
+fn thermal_pressure_name(level: &serde_json::Value) -> serde_json::Value {
+    match level.as_u64() {
+        Some(0) => serde_json::json!("nominal"),
+        Some(1) => serde_json::json!("moderate"),
+        Some(2) => serde_json::json!("heavy"),
+        Some(3) => serde_json::json!("trapping"),
+        Some(4) => serde_json::json!("sleeping"),
+        Some(n) => serde_json::json!(n.to_string()),
+        None => serde_json::Value::Null,
+    }
+}
+
 /// Pushes one HA entity per hardware reading from the relay-sensors snapshot.
-/// Readings the helper could not obtain (JSON null) are skipped rather than sent as unknown.
+/// Readings the helper could not obtain on this device (JSON null) are skipped rather than sent as unknown.
 async fn push_hardware_sensors(client: &reqwest::Client, base_url: &str, token: &str, entity_id: &str, metrics: &RelayMetrics) {
     let Some(hw) = metrics.get_sensors() else { return };
     let battery = &hw["battery"];
+    let thermal = thermal_pressure_name(&hw["thermal_pressure"]);
 
-    // (suffix, value, friendly name, unit, device_class, icon)
-    let readings: [(&str, &serde_json::Value, &str, &str, Option<&str>, &str); 8] = [
-        ("battery_temperature", &battery["temperature_c"], "Battery Temperature", "°C", Some("temperature"), "mdi:thermometer"),
-        ("battery_voltage", &battery["voltage_mv"], "Battery Voltage", "mV", Some("voltage"), "mdi:flash"),
-        ("battery_current", &battery["current_ma"], "Battery Current", "mA", Some("current"), "mdi:current-dc"),
-        ("battery_health", &battery["health_pct"], "Battery Health", "%", None, "mdi:battery-heart-variant"),
-        ("battery_cycles", &battery["cycle_count"], "Battery Cycles", "cycles", None, "mdi:battery-sync"),
-        ("illuminance", &hw["illuminance_lx"], "Ambient Light", "lx", Some("illuminance"), "mdi:brightness-5"),
-        ("memory_free", &hw["mem_free_mb"], "Free Memory", "MB", Some("data_size"), "mdi:memory"),
-        ("system_uptime", &hw["system_uptime_s"], "System Uptime", "s", Some("duration"), "mdi:timer-outline"),
+    let m = Some("measurement");
+    let total = Some("total_increasing");
+    let readings = [
+        Reading { suffix: "battery_temperature", value: &battery["temperature_c"], name: "Battery Temperature", unit: Some("°C"), device_class: Some("temperature"), state_class: m, icon: "mdi:thermometer" },
+        Reading { suffix: "battery_voltage", value: &battery["voltage_mv"], name: "Battery Voltage", unit: Some("mV"), device_class: Some("voltage"), state_class: m, icon: "mdi:flash" },
+        Reading { suffix: "battery_current", value: &battery["current_ma"], name: "Battery Current", unit: Some("mA"), device_class: Some("current"), state_class: m, icon: "mdi:current-dc" },
+        Reading { suffix: "battery_health", value: &battery["health_pct"], name: "Battery Health", unit: Some("%"), device_class: None, state_class: m, icon: "mdi:battery-heart-variant" },
+        Reading { suffix: "battery_max_capacity", value: &battery["max_capacity_mah"], name: "Battery Full Charge Capacity", unit: Some("mAh"), device_class: None, state_class: m, icon: "mdi:battery-high" },
+        Reading { suffix: "battery_cycles", value: &battery["cycle_count"], name: "Battery Cycles", unit: Some("cycles"), device_class: None, state_class: total, icon: "mdi:battery-sync" },
+        Reading { suffix: "charger_rating", value: &battery["adapter_watts"], name: "Charger Rating", unit: Some("W"), device_class: Some("power"), state_class: None, icon: "mdi:power-plug" },
+        Reading { suffix: "charger_input_power", value: &hw["charger_input_w"], name: "Charger Input Power", unit: Some("W"), device_class: Some("power"), state_class: m, icon: "mdi:transmission-tower-import" },
+        Reading { suffix: "soc_temperature", value: &hw["soc_temp_c"], name: "SoC Temperature", unit: Some("°C"), device_class: Some("temperature"), state_class: m, icon: "mdi:chip" },
+        Reading { suffix: "cpu_temperature", value: &hw["cpu_temp_c"], name: "CPU Temperature", unit: Some("°C"), device_class: Some("temperature"), state_class: m, icon: "mdi:cpu-64-bit" },
+        Reading { suffix: "storage_temperature", value: &hw["nand_temp_c"], name: "Storage Temperature", unit: Some("°C"), device_class: Some("temperature"), state_class: m, icon: "mdi:harddisk" },
+        Reading { suffix: "camera_temperature", value: &hw["camera_temp_c"], name: "Camera Temperature", unit: Some("°C"), device_class: Some("temperature"), state_class: m, icon: "mdi:camera" },
+        Reading { suffix: "thermal_state", value: &thermal, name: "Thermal State", unit: None, device_class: None, state_class: None, icon: "mdi:thermometer-alert" },
+        Reading { suffix: "illuminance", value: &hw["illuminance_lx"], name: "Ambient Light", unit: Some("lx"), device_class: Some("illuminance"), state_class: m, icon: "mdi:brightness-5" },
+        Reading { suffix: "screen_brightness", value: &hw["brightness_pct"], name: "Screen Brightness", unit: Some("%"), device_class: None, state_class: m, icon: "mdi:brightness-6" },
+        Reading { suffix: "media_volume", value: &hw["volume_media_pct"], name: "Media Volume", unit: Some("%"), device_class: None, state_class: m, icon: "mdi:volume-high" },
+        Reading { suffix: "ringer_volume", value: &hw["volume_ringer_pct"], name: "Ringer Volume", unit: Some("%"), device_class: None, state_class: m, icon: "mdi:bell-ring" },
+        Reading { suffix: "wifi_network", value: &hw["wifi_ssid"], name: "Wi-Fi Network", unit: None, device_class: None, state_class: None, icon: "mdi:wifi" },
+        Reading { suffix: "wifi_signal", value: &hw["wifi_rssi_dbm"], name: "Wi-Fi Signal", unit: Some("dBm"), device_class: Some("signal_strength"), state_class: m, icon: "mdi:wifi-strength-3" },
+        Reading { suffix: "wifi_received", value: &hw["wifi_rx_bytes"], name: "Wi-Fi Received", unit: Some("B"), device_class: Some("data_size"), state_class: total, icon: "mdi:download-network" },
+        Reading { suffix: "wifi_sent", value: &hw["wifi_tx_bytes"], name: "Wi-Fi Sent", unit: Some("B"), device_class: Some("data_size"), state_class: total, icon: "mdi:upload-network" },
+        Reading { suffix: "storage_free", value: &hw["data_free_mb"], name: "Storage Free", unit: Some("MB"), device_class: Some("data_size"), state_class: m, icon: "mdi:harddisk" },
+        Reading { suffix: "system_storage_free", value: &hw["system_free_mb"], name: "System Partition Free", unit: Some("MB"), device_class: Some("data_size"), state_class: m, icon: "mdi:harddisk-remove" },
+        Reading { suffix: "memory_free", value: &hw["mem_free_mb"], name: "Free Memory", unit: Some("MB"), device_class: Some("data_size"), state_class: m, icon: "mdi:memory" },
+        Reading { suffix: "cpu_load", value: &hw["load_1m"], name: "CPU Load", unit: None, device_class: None, state_class: m, icon: "mdi:gauge" },
+        Reading { suffix: "system_uptime", value: &hw["system_uptime_s"], name: "System Uptime", unit: Some("s"), device_class: Some("duration"), state_class: m, icon: "mdi:timer-outline" },
     ];
 
-    for (suffix, value, name, unit, device_class, icon) in readings {
-        if value.is_null() {
+    for r in readings {
+        if r.value.is_null() {
             continue;
         }
         let mut attributes = serde_json::json!({
-            "friendly_name": format!("OpenBubbles Relay {}", name),
-            "unit_of_measurement": unit,
-            "state_class": "measurement",
-            "icon": icon,
+            "friendly_name": format!("OpenBubbles Relay {}", r.name),
+            "icon": r.icon,
         });
-        if let Some(dc) = device_class {
+        if let Some(unit) = r.unit {
+            attributes["unit_of_measurement"] = serde_json::json!(unit);
+        }
+        if let Some(dc) = r.device_class {
             attributes["device_class"] = serde_json::json!(dc);
         }
-        let payload = serde_json::json!({ "state": value, "attributes": attributes });
-        post_state(client, base_url, token, &format!("{}_{}", entity_id, suffix), &payload).await;
+        if let Some(sc) = r.state_class {
+            attributes["state_class"] = serde_json::json!(sc);
+        }
+        match r.suffix {
+            "wifi_network" => {
+                attributes["bssid"] = hw["wifi_bssid"].clone();
+                attributes["channel"] = hw["wifi_channel"].clone();
+            }
+            "storage_free" => attributes["total_mb"] = hw["data_total_mb"].clone(),
+            "cpu_load" => {
+                attributes["load_5m"] = hw["load_5m"].clone();
+                attributes["load_15m"] = hw["load_15m"].clone();
+            }
+            "battery_max_capacity" => attributes["design_capacity_mah"] = battery["design_capacity_mah"].clone(),
+            "charger_rating" => attributes["adapter"] = battery["adapter_name"].clone(),
+            _ => {}
+        }
+        let payload = serde_json::json!({ "state": r.value, "attributes": attributes });
+        post_state(client, base_url, token, &format!("{}_{}", entity_id, r.suffix), &payload).await;
     }
 
-    // Charging as a real binary_sensor so it can drive automations directly.
-    let charging = battery["is_charging"].as_bool().unwrap_or_else(crate::c::is_charging_rs);
+    // On/off states as real binary_sensors so they can drive automations directly.
+    let charging = battery["is_charging"].as_bool().or_else(|| Some(crate::c::is_charging_rs()));
+    let screen_on = hw["screen_on"].as_bool();
+    let flags = [
+        Flag { suffix: "charging", value: charging, name: "Charging", device_class: Some("battery_charging"), icon_on: "mdi:battery-charging", icon_off: "mdi:battery" },
+        Flag { suffix: "plugged_in", value: battery["external_connected"].as_bool(), name: "Plugged In", device_class: Some("plug"), icon_on: "mdi:power-plug", icon_off: "mdi:power-plug-off" },
+        Flag { suffix: "screen", value: screen_on, name: "Screen", device_class: None, icon_on: "mdi:cellphone-screenshot", icon_off: "mdi:cellphone-off" },
+        // HA's lock device_class means on = unlocked.
+        Flag { suffix: "unlocked", value: hw["locked"].as_bool().map(|l| !l), name: "Unlocked", device_class: Some("lock"), icon_on: "mdi:lock-open-variant", icon_off: "mdi:lock" },
+        Flag { suffix: "ringer", value: hw["ringer_on"].as_bool(), name: "Ringer", device_class: None, icon_on: "mdi:bell-ring", icon_off: "mdi:bell-off" },
+        Flag { suffix: "low_power_mode", value: hw["low_power_mode"].as_bool(), name: "Low Power Mode", device_class: None, icon_on: "mdi:battery-heart-outline", icon_off: "mdi:battery-heart-variant" },
+    ];
+
     let object_id = entity_id.strip_prefix("sensor.").unwrap_or(entity_id);
-    let payload = serde_json::json!({
-        "state": if charging { "on" } else { "off" },
-        "attributes": {
-            "friendly_name": "OpenBubbles Relay Charging",
-            "device_class": "battery_charging",
-            "external_connected": battery["external_connected"],
-            "fully_charged": battery["fully_charged"],
+    for f in flags {
+        let Some(on) = f.value else { continue };
+        let mut attributes = serde_json::json!({
+            "friendly_name": format!("OpenBubbles Relay {}", f.name),
+            "icon": if on { f.icon_on } else { f.icon_off },
+        });
+        if let Some(dc) = f.device_class {
+            attributes["device_class"] = serde_json::json!(dc);
         }
-    });
-    post_state(client, base_url, token, &format!("binary_sensor.{}_charging", object_id), &payload).await;
+        if f.suffix == "charging" {
+            attributes["external_connected"] = battery["external_connected"].clone();
+            attributes["fully_charged"] = battery["fully_charged"].clone();
+        }
+        let payload = serde_json::json!({ "state": if on { "on" } else { "off" }, "attributes": attributes });
+        post_state(client, base_url, token, &format!("binary_sensor.{}_{}", object_id, f.suffix), &payload).await;
+    }
 }
 
 pub async fn push_to_homeassistant(

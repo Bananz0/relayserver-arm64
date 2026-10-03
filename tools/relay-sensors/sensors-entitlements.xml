@@ -12,5 +12,9 @@
     <true/>
     <key>com.apple.private.hid.client.event-dispatch</key>
     <true/>
+    <key>com.apple.wifi.manager-access</key>
+    <true/>
+    <key>com.apple.backboard.client</key>
+    <true/>
   </dict>
 </plist>
