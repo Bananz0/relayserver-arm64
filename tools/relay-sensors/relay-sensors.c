@@ -466,6 +466,23 @@ static void emit_system(void) {
         json_null("system_free_mb");
 }
 
+// State published by relay-chargelimit (one JSON object), embedded as-is.
+static void emit_charge_limit(void) {
+    char buf[256] = "";
+    FILE *f = fopen("/var/mobile/chargelimit.state", "r");
+    if (f) {
+        if (!fgets(buf, sizeof buf, f)) buf[0] = 0;
+        fclose(f);
+    }
+    size_t n = strlen(buf);
+    while (n && (buf[n - 1] == '\n' || buf[n - 1] == '\r')) buf[--n] = 0;
+    json_key("charge_limit");
+    if (n > 1 && buf[0] == '{' && buf[n - 1] == '}')
+        printf("%s", buf);
+    else
+        printf("null");
+}
+
 int main(void) {
     printf("{");
     emit_battery();
@@ -473,6 +490,7 @@ int main(void) {
     emit_device_state();
     emit_wifi();
     emit_system();
+    emit_charge_limit();
     printf("}\n");
     return 0;
 }

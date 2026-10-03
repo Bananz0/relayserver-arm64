@@ -263,6 +263,7 @@ async fn push_hardware_sensors(client: &reqwest::Client, base_url: &str, token: 
         Reading { suffix: "system_storage_free", value: &hw["system_free_mb"], name: "System Partition Free", unit: Some("MB"), device_class: Some("data_size"), state_class: m, icon: "mdi:harddisk-remove" },
         Reading { suffix: "memory_free", value: &hw["mem_free_mb"], name: "Free Memory", unit: Some("MB"), device_class: Some("data_size"), state_class: m, icon: "mdi:memory" },
         Reading { suffix: "cpu_load", value: &hw["load_1m"], name: "CPU Load", unit: None, device_class: None, state_class: m, icon: "mdi:gauge" },
+        Reading { suffix: "charge_limit", value: &hw["charge_limit"]["state"], name: "Charge Limit", unit: None, device_class: None, state_class: None, icon: "mdi:battery-charging-80" },
         Reading { suffix: "system_uptime", value: &hw["system_uptime_s"], name: "System Uptime", unit: Some("s"), device_class: Some("duration"), state_class: m, icon: "mdi:timer-outline" },
     ];
 
@@ -295,6 +296,11 @@ async fn push_hardware_sensors(client: &reqwest::Client, base_url: &str, token: 
             }
             "battery_max_capacity" => attributes["design_capacity_mah"] = battery["design_capacity_mah"].clone(),
             "charger_rating" => attributes["adapter"] = battery["adapter_name"].clone(),
+            "charge_limit" => {
+                attributes["max_pct"] = hw["charge_limit"]["max"].clone();
+                attributes["min_pct"] = hw["charge_limit"]["min"].clone();
+                attributes["enabled"] = hw["charge_limit"]["enabled"].clone();
+            }
             _ => {}
         }
         let payload = serde_json::json!({ "state": r.value, "attributes": attributes });
