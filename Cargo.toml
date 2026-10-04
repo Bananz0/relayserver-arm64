@@ -10,14 +10,14 @@ libc = "0.2.156"
 plist = "1.7.0"
 reqwest = { version = "0.12.5", default-features = false, features = ["rustls-tls-webpki-roots"] }
 serde = { version = "1.0.208", features = ["derive"] }
-thiserror = "1.0.63"
+thiserror = "2.0.21"
 tokio = { version = "1.39.2", features = ["full"] }
-base64 = "0.21.2"
-backon = "0.4.4"
+base64 = "0.23.1"
+backon = "1.6.0"
 futures = "0.3.30"
-tokio-tungstenite = { version = "0.23.1", features = ["rustls-tls-webpki-roots"] }
+tokio-tungstenite = { version = "0.30.0", features = ["rustls-tls-webpki-roots"] }
 serde_json = "1.0.125"
-nix = { version = "0.29.0", features = ["feature"] }
+nix = { version = "0.31.3", features = ["feature"] }
 
 
 [build-dependencies]
